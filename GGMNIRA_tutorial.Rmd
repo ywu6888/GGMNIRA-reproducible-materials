@@ -1,0 +1,382 @@
+---
+title: "GGMNIRA Empirical Application"
+author: "Yiming Wu"
+date: "2026-06-28"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  out.width = "85%"
+)
+
+```
+
+# Overview
+
+This document provides a step by step reproducible example of applying the Gaussian Graphical Model NodeIdentifyR Algorithm (GGMNIRA) to a Rest Intolerance data set.
+
+The goal of this example is to show how researchers can use GGMNIRA to identify which symptom of Rest Intolerance is projected to have the greatest impact when manipulated. Additionally, we binarized the original ordinal data in order to implement the original Ising-model-based NIRA method, and compared its results with those of GGMNIRA. Specifically, we will:
+
+1. load the `GGMNIRA` R package and the built-in `RIdata` data set;
+2. estimate a regularized Gaussian graphical model for the Rest Intolerance items;
+3. apply GGMNIRA to compute KL divergence values after simulated manipulation of each node;
+4. visualize the projected manipulation effects;
+5. evaluate the stability of the KL divergence estimates using a case-dropping bootstrap;
+6. conduct bootstrap difference tests for pairwise differences in KL divergence;
+7. recode the original ordinal data into binary;
+8. estimate a regularized Ising model for the binary Rest Intolerance items;
+9. apply the original NIRA to the Ising model under alleviating and aggravating manipulations.
+
+# Installation
+
+The `GGMNIRA` package can be installed from GitHub using the following code.
+
+```{r installation, eval=FALSE}
+install.packages("remotes")
+remotes::install_github("ywu6888/GGMNIRA")
+```
+
+To perform the original NIRA analysis based on the binary Ising model, the following additional packages are also required.
+
+```{r installation-original-nira, eval=FALSE}
+install.packages(c("nodeIdentifyR", "dplyr"))
+```
+
+
+# Load required packages
+
+We first load the packages required for the analysis.
+
+```{r load-packages}
+library(GGMNIRA)
+library(nodeIdentifyR)
+library(dplyr)
+```
+
+# Load the example data
+
+The example data used here are included in the `GGMNIRA` package. Therefore, the data can be loaded directly using the `data()` function.
+
+```{r load-data}
+data("RIdata", package = "GGMNIRA")
+```
+
+We can inspect the dimension and the first several rows of the data.
+
+```{r inspect-data}
+dim(RIdata)
+head(RIdata)
+```
+
+The data set contains eight Rest Intolerance items. These items cover four dimensions: negative feelings (NF), social comparison (SC), obsessive thinking (OT), and cognitive bias (CB), with two items for each dimension.
+
+# Estimate the Gaussian graphical model
+
+Before applying GGMNIRA, we first estimate a regularized Gaussian graphical model for the eight Rest Intolerance items.
+
+The network is estimated using the `estimateNetwork()` function from the `bootnet` package. We use the `EBICglasso` method and set `corMethod = "cor_auto"`, so that the appropriate correlation input is selected automatically. For ordinal data, this typically leads to the use of polychoric correlations.
+
+```{r estimate-network}
+net <- bootnet::estimateNetwork(
+  RIdata,
+  default = "EBICglasso",
+  corMethod = "cor_auto"
+)
+
+```
+
+# Visualize the estimated network
+
+We next plot the estimated Gaussian graphical model.
+
+```{r plot-network, fig.width=7, fig.height=6}
+Plot_network <- plot(
+  net,
+  layout = "spring",
+  groups = rep("Rest Intolerance", 8),
+  color = c("#A1A9D0"),
+  legend = TRUE
+)
+
+```
+
+In this network, nodes represent the eight Rest Intolerance items, and edges represent regularized partial correlation coefficients between items, reflecting the conditional dependence between two items after controlling for all others.
+
+# Apply GGMNIRA
+
+After estimating the Gaussian graphical model, we can apply GGMNIRA.
+
+In this example, all nodes belong to the same construct, namely Rest Intolerance. Therefore, the `type` argument is specified as a vector in which all eight entries are `"Rest Intolerance"`.
+
+```{r run-ggmnira, message=TRUE}
+RI_res <- GGM_NIRA(
+  net = net,
+  type = rep("Rest Intolerance", 8)
+)
+
+```
+
+The `GGM_NIRA()` function outputs several pieces of messages, including the spectral radius of the regression coefficient matrix, the KL divergence threshold, the automatically identified manipulation intensity for practical application, and the first node that reaches the threshold.
+
+In the output messages above, we emphasize only the manipulation intensity and not the manipulation direction because the manuscript's derivation has already demonstrated that changes in manipulation direction do not affect the final ranking results; therefore, we assume the manipulation direction to be positive by default, and the output need only present the manipulation intensity.
+
+# Extract GGMNIRA results
+
+We can use the `GGMNIRA_result()` function to extract the main results in a compact table.
+
+```{r extract-ggmnira-results}
+GGMNIRA_result(RI_res)
+
+```
+
+Results show that, numerically, NF2 has the largest KL divergence. This indicates that feeling like a loser during rest are projected to be the most important factor in inducing Rest Intolerance as a psychosocial problem, and manipulating this symptom is expected to produce the largest manipulation effect.
+
+# Visualize the KL divergence results
+
+To more intuitively illustrate the simulated manipulation effects of each node, we can visualize the results using the `GGMNIRA_plot()` function, in which the `manipulation_I` argument was used to specify the minimum manipulation coefficient for practical application. 
+
+Based on the output messages provided by the `GGM_NIRA()` function, the current minimum manipulation coefficient for practical application is 1; therefore, we set `manipulation_I = 1` here.
+
+```{r plot-ggmnira-results, fig.width=7, fig.height=5}
+GGMNIRA_Plot <- GGMNIRA_plot(
+  RI_res,
+  manipulation_I = 1
+)
+
+print(GGMNIRA_Plot)
+```
+
+In this plot, the x-axis represents the manipulated nodes, and the y-axis represents the KL divergence between the post-manipulation distribution and the baseline distribution.
+
+# Stability assessment via case-dropping bootstrap
+
+After computing the KL divergence values, it is important to evaluate whether these estimates are stable.
+
+GGMNIRA provides the `bootnet_KL()` function to conduct a case-dropping bootstrap analysis. This procedure repeatedly estimates KL divergence values after dropping different proportions of cases, and then evaluates how strongly the bootstrap KL divergence vector correlate with the original full-sample vector.
+
+The following code performs the case-dropping bootstrap with 1000 bootstrap replications.
+
+```{r case-dropping-bootstrap, message=FALSE, warning=FALSE, cache=TRUE, results='hide'}
+boot_result <- bootnet_KL(
+  data = RIdata,
+  type = rep("Rest Intolerance", 8),
+  nBoots = 1000,
+  nCores = 8,
+  seed = 2026
+)
+```
+
+
+# Compute the CS coefficient
+
+We can compute the CS coefficient for KL divergence using the `corStability_KL()` function.
+
+```{r compute-cs}
+CS_result <- corStability_KL(
+  boot_result = boot_result
+)
+
+```
+
+The CS coefficient quantifies the maximum proportion of cases that can be dropped while retaining a sufficiently high correlation with the original KL divergence vector.
+
+If the CS coefficient is sufficiently large, the KL divergence estimates can be interpreted as having an acceptable degree of stability. In this example, the results show that the CS coefficient for KL divergence is 0.672, which is higher than the preliminary threshold of 0.40 identified in our simulation study. This indicates that the KL divergence has a certain degree of stability.
+
+# Plot the stability results
+
+We can visualize the case-dropping bootstrap results using the `plot_KL()` function.
+
+```{r plot-cs, fig.width=7, fig.height=5}
+plot_KL(
+  CS_result = CS_result,
+  boot_result = boot_result
+)
+```
+
+The plot shows the average correlations between the KL divergence values obtained from case-dropping bootstrap samples and those obtained from the original sample. The lines indicate the mean correlations, and the shaded areas indicate the range from the 2.5th quantile to the 97.5th quantile.
+
+# Bootstrap difference test
+
+In addition to evaluating stability, we may also want to test whether the KL divergence values of different nodes are statistically distinguishable.
+
+For this purpose, GGMNIRA provides the `bootnet_KL_nonparametric()` function for nonparametric bootstrap sampling and the `differenceTest_KL()` function for constructing confidence intervals for pairwise KL divergence differences.
+
+Unlike `bootnet_KL()`, the `bootnet_KL_nonparametric()` function requires users to manually specify the manipulation intensity through the `manipulation_I` argument. This is because the difference test plot displays the actual KL divergence values. Therefore, the manipulation intensity should be set according to the manipulation intensity reported by `GGM_NIRA()` in the main analysis. As mentioned earlier, we set `manipulation_I = 1`.
+
+```{r nonparametric-bootstrap, message=FALSE, warning=FALSE, cache=TRUE, results='hide'}
+boot_nonparametric_result <- bootnet_KL_nonparametric(
+  data = RIdata,
+  net = net,
+  type = rep("Rest Intolerance", 8),
+  nBoots = 1000,
+  manipulation_I = 1,
+  seed = 2026
+)
+```
+
+# Conduct the difference test
+
+We can then compute pairwise bootstrap difference tests using the `differenceTest_KL()` function.
+
+```{r difference-test}
+diff_result <- differenceTest_KL(
+  boot_nonparametric_result
+)
+```
+
+# Visualize the difference test
+
+Finally, we visualize the bootstrap difference test results.
+
+```{r plot-difference-test, fig.width=8, fig.height=6}
+plot_KL_difference(
+  diff_result = diff_result,
+  sample_KL = boot_nonparametric_result$sample_KL,
+  order = "sample"
+)
+```
+
+In the difference test plot, nodes are compared pairwise in terms of their KL divergence values. Significant pairwise differences indicate that the projected importance of the two corresponding nodes can be statistically distinguished under the current bootstrap procedure. In this example, the results show that the KL divergence of CB1 and CB2 differed significantly from those of all other variables, and that the KL divergence of CB1 and CB2 also differed significantly from each other, while other variables did not differ significantly.
+
+However, it is important to note that interpret nonsignificant differences should be carefully. If the KL divergence values of two nodes do not differ significantly, this does not prove that the two nodes have exactly equal projected importance. It only indicates that the current sample does not provide sufficient evidence that their KL divergence values are statistically different.
+
+
+# Recode the original ordinal data into binary
+
+The previous analysis applied GGMNIRA to the original ordinal Rest Intolerance data. To further illustrate how the results may differ under the original NIRA framework, we next recode the data into binary variables and estimate an Ising model.
+
+Following the recoding rule used in the empirical example, original scores from 1 to 4 are coded as 0, whereas a score of 5 is coded as 1.
+
+```{r create-binary-data}
+to_01_from_5pt <- function(x, cutpoint = 5) {
+  x_num <- as.integer(as.character(x))
+  as.integer(x_num >= cutpoint)
+}
+
+RIdata_binary <- as.data.frame(
+  lapply(RIdata, to_01_from_5pt, cutpoint = 5)
+)
+
+head(RIdata_binary)
+```
+
+# Estimate the regularized Ising model
+
+After obtaining the binary data, we estimate a regularized Ising model using the `estimateNetwork()` function. Here, the model type is set to `"IsingFit"`.
+
+```{r estimate-ising-model, message=FALSE, warning=FALSE, results='hide'}
+RI_ising <- bootnet::estimateNetwork(
+  RIdata_binary,
+  default = "IsingFit"
+)
+```
+
+# Plot the Ising network
+
+```{r plot-ising-network, fig.width=7, fig.height=6}
+graph <- plot(
+  RI_ising,
+  layout = "spring",
+  groups = rep("Rest Intolerance", 8),
+  color = c("#F9EB77"),
+  legend = TRUE
+)
+```
+
+In this network, nodes represent the binary Rest Intolerance items, and edges represent regularized logistic regression coefficients between items, reflecting the conditional dependence between two items after controlling for all others.
+
+# Prepare parameters for original NIRA
+
+The original NIRA analysis requires the edge weight matrix and the threshold parameter vector from the estimated Ising model. These can be extracted from the estimated network object as follows.
+
+```{r prepare-nira-parameters}
+edgeWeightMatrix <- RI_ising$graph       
+thresholdVector <- RI_ising$intercepts  
+```
+
+# Original NIRA: alleviating and aggravating interventions
+
+After setting the random seed to 2026 to ensure reproducibility, we applied the original NIRA to the estimated Ising model under two intervention directions: alleviating and aggravating. In both analyses, the threshold parameter of each node was intervened one at a time, with the intervention size set to 2 standard deviations.
+
+For the alleviating intervention, a lower network sum score indicates a stronger projected alleviating intervention effect. Therefore, the node whose intervention produces the lowest average sum score can be interpreted as the most important projected target for symptom reduction under the original NIRA framework.
+
+```{r original-nira-alleviating, cache=TRUE}
+set.seed(2026)
+
+gs_IsingSamples_alleviating <- simulateResponses(
+  edgeWeightMatrix,
+  thresholdVector,
+  "alleviating",
+  2
+)
+
+# Calculate the sum score for each simulated response sample
+gs_sumIsingSamples_alleviating <- calculateSumScores(gs_IsingSamples_alleviating)
+
+# Convert the simulated sum scores into long format for plotting
+gs_sumIsingSamplesLong_alleviating <- prepareDFforPlottingAndANOVA(
+  gs_sumIsingSamples_alleviating
+)
+
+# Plot the mean sum scores
+plotSumScores(
+  sum_scores_long = gs_sumIsingSamplesLong_alleviating,
+  perturbation_type = "alleviating"
+)
+```
+
+We then repeated the same procedure for the aggravating intervention. In this case, a higher network sum score indicates a stronger projected aggravating effect. Therefore, the node whose intervention produces the highest average sum score can be interpreted as the most important projected target for symptom aggravation under the original NIRA framework.
+
+```{r original-nira-aggravating, cache=TRUE}
+set.seed(2026)
+
+gs_IsingSamples_aggravating <- simulateResponses(
+  edgeWeightMatrix,
+  thresholdVector,
+  "aggravating",
+  2
+)
+
+gs_sumIsingSamples_aggravating <- calculateSumScores(gs_IsingSamples_aggravating)
+
+gs_sumIsingSamplesLong_aggravating <- prepareDFforPlottingAndANOVA(
+  gs_sumIsingSamples_aggravating
+)
+
+plotSumScores(
+  sum_scores_long = gs_sumIsingSamplesLong_aggravating,
+  perturbation_type = "aggravating"
+)
+```
+The results showed that, for both alleviating and aggravating interventions, CB2 was the variable with the greatest projected importance in the network. This differs from the variable identified as having the greatest projected importance by GGMNIRA, indicating that conclusions obtained by forcibly dichotomizing ordinal data for analysis may not necessarily be reliable.
+
+# Summary
+
+This reproducible example demonstrates how to apply GGMNIRA to the Rest Intolerance data set and how to compare its results with the original Ising-model-based NIRA framework.
+
+Using the original ordinal data, we first estimated a regularized Gaussian graphical model and applied GGMNIRA to evaluate each node’s projected importance based on KL divergence. We then assessed the stability of the KL divergence estimates using a case-dropping bootstrap procedure and examined pairwise differences between nodes using a nonparametric bootstrap difference test.
+
+To further compare GGMNIRA with the original NIRA framework, we recoded the ordinal data into binary variables, estimated a regularized Ising model, and applied the original NIRA under both alleviating and aggravating interventions. This comparison illustrates that GGMNIRA and the original NIRA address related but non-equivalent questions: they differ in data representation, network model, manipulated parameter, and outcome indicator.
+
+Overall, the example shows that GGMNIRA can be used to evaluate projected importance while retaining the original ordinal information. The comparison with the binary Ising-model-based NIRA further suggests that dichotomizing ordinal data may lead to different substantive conclusions and should therefore be interpreted with caution.
+
+# Session information
+
+For reproducibility, we report the R session information used to generate this document.
+
+```{r session-info}
+sessionInfo()
+```
+````
+
