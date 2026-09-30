@@ -23,7 +23,7 @@ The tutorial includes the following steps:
 2. estimate a regularized Gaussian graphical model for the Rest Intolerance items;
 3. apply GGMNIRA to compute KL divergence values after simulated manipulation of each node;
 4. visualize the projected manipulation effects;
-5. evaluate the stability of the KL divergence estimates using a case-dropping bootstrap;
+5. evaluate the stability of the relative pattern of KL divergence across nodes using a case-dropping bootstrap;
 6. conduct bootstrap difference tests for pairwise differences in KL divergence;
 7. recode the original ordinal data into binary;
 8. estimate a regularized Ising model for the binary Rest Intolerance items;
@@ -40,7 +40,7 @@ remotes::install_github("ywu6888/GGMNIRA")
 
 To perform the original NIRA analysis based on the binary Ising model, the following additional packages are also required.
 
-```{r installation-original-nira, eval=FALSE}
+```r
 install.packages(c("nodeIdentifyR", "dplyr"))
 ```
 
